@@ -37,8 +37,8 @@ uint16_t icmp_checksum(std::span<const uint8_t> data) {
 volatile sig_atomic_t Ping::stop = 0;
 
 void Ping::sigint_handler(int signal) {
+  std::cout << "\rStopping" << std::endl << std::flush;
   Ping::stop = 1;
-  std::cout << "\rStopping" << std::endl;
 }
 
 void Ping::handle_sigint() { signal(SIGINT, Ping::sigint_handler); }

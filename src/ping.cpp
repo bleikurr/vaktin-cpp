@@ -1,4 +1,3 @@
-// #include "icmp.hpp"
 #include "icmp.hpp"
 
 #include <arpa/inet.h>
@@ -7,6 +6,9 @@
 #include <iostream>
 
 #include <netinet/in.h>
+
+using namespace vaktin;
+
 typedef struct {
   char *address;
   int interval;
@@ -52,7 +54,9 @@ int main(int argc, char *argv[]) {
     return -1;
 
   Ping ping(opts.address, opts.interval);
-  if (ping.is_ready())
+  if (ping.is_ready()) {
+    vaktin::icmp::Ping::handle_sigint();
     ping.ping();
+  }
   return 0;
 }

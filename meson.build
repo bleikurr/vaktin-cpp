@@ -6,7 +6,8 @@ project('vaktin', 'cpp',
 subdir('src/')
 
 executable(
-  'ping',
-  src_files,
-  include_directories: src_includes
+  'vping',
+  ['src/ping.cpp', src_files],
+  include_directories: src_includes,
+  install: true
 )

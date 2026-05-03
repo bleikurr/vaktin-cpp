@@ -1,5 +1,4 @@
-#include "icmp.hpp"
-#include "network.hpp"
+#include "vaktin/icmp.hpp"
 
 #include <csignal>
 #include <iostream>
@@ -13,6 +12,7 @@
 namespace vaktin {
 namespace icmp {
 
+using namespace netpp;
 // Useless rn
 uint16_t icmp_checksum(std::span<const uint8_t> data) {
   int i = 0;
@@ -43,50 +43,40 @@ void Ping::sigint_handler(int signal) {
 
 void Ping::handle_sigint() { signal(SIGINT, Ping::sigint_handler); }
 
-Ping::Ping(char *address, int interval) {
-  network::DNSResult *dnsres = network::dns_lookup(address);
-  if (dnsres == nullptr) {
-    m_dns = nullptr;
+Ping::Ping(char *address, int interval)
+    : m_socket(sockets::Socket::ClientSocket(sockets::IP4, sockets::DATAGRAM,
+                                             "icmp")) {
+  using namespace address;
+  std::optional<Address> addr = Address::get_address(address);
+  if (!addr) {
+    m_address = std::nullopt;
     m_ready = false;
     return;
   }
-  std::fill(m_packetdata, m_packetdata + ICMP_LEN, 0);
-  std::fill(m_buffer, m_buffer + ICMP_LEN, 0);
 
-  struct icmp *packet = (struct icmp *)m_packetdata;
+  struct icmp *packet = reinterpret_cast<struct icmp *>(m_packetdata.data());
   packet->icmp_type = ICMP_ECHO;
   packet->icmp_code = 0;
   packet->icmp_seq = 1;
   packet->icmp_id = 1024;
   packet->icmp_cksum = 0;
 
-  m_dns = dnsres;
-  m_addrlen = sizeof(sockaddr_in);
+  m_address = addr;
   m_interval = interval;
   m_timeout = 1 * 1000; // Sec to milliseconds
   m_count = 0;
-
-  m_sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP);
-  if (m_sockfd < 0) {
-    std::cerr << "Error creating socket" << std::endl;
-    m_ready = false;
-  }
 
   m_ready = true;
 }
 
 void Ping::print_status(bool success) {
-  std::cout << m_dns->dns << ": (" << m_dns->ip << ") - " << m_count << " ";
+  std::cout << m_address->name() << ": (" << m_address->ip() << ") - "
+            << m_count << " ";
   if (success) {
     std::cout << "Ping!" << std::endl;
   } else {
     std::cout << "NoAnswer" << std::endl;
   }
-}
-
-Ping::~Ping() {
-  if (m_dns != nullptr)
-    dns_free(m_dns);
 }
 
 bool Ping::is_ready() { return m_ready; }
@@ -96,16 +86,16 @@ void Ping::ping() {
     std::cerr << "Ping instance can't ping." << std::endl;
     return;
   }
-  socklen_t addrlen = sizeof(sockaddr_storage);
   nfds_t nfds = 1;
   struct pollfd fds[1];
   struct pollfd &fd = fds[0];
-  fd.fd = m_sockfd;
+  fd.fd = m_socket.sockfd();
   fd.events = POLLIN;
   int ready = 0;
 
+  m_socket.set_address(m_address.value());
   while (true) {
-    sendto(m_sockfd, m_packetdata, ICMP_LEN, 0, m_dns->addr, m_addrlen);
+    m_socket.sendto(m_packetdata);
     m_count++;
 
     ready = poll(fds, nfds, m_timeout);
@@ -114,7 +104,7 @@ void Ping::ping() {
     }
     if (ready > 0) {
       if (fd.revents & POLLIN) {
-        recvfrom(m_sockfd, m_buffer, 128, 0, m_dns->addr, &addrlen);
+        m_socket.recvfrom(m_buffer);
         print_status(true);
         sleep(m_interval);
       } else {

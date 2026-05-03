@@ -4,12 +4,15 @@
 #include <csignal>
 #include <cstdint>
 #include <span>
+#include <vector>
 
-#include "network.hpp"
-
-#define ICMP_LEN 64
+#include "netpp/address.hpp"
+#include "netpp/socket.hpp"
 
 namespace vaktin::icmp {
+using namespace netpp;
+constexpr std::size_t ICMP_LEN = 64;
+
 // Calculate ICMP checksum of header
 uint16_t icmp_checksum(std::span<const uint8_t> header);
 int ping(char *address);
@@ -17,7 +20,6 @@ int ping(char *address);
 class Ping {
 public:
   Ping(char *address, int interval);
-  ~Ping();
 
   bool is_ready();
   void ping();
@@ -26,14 +28,13 @@ public:
 
 private:
   bool m_ready;
-  network::DNSResult *m_dns;
-  uint8_t m_packetdata[ICMP_LEN];
-  socklen_t m_addrlen;
-  uint8_t m_buffer[ICMP_LEN];
+  std::optional<netpp::address::Address> m_address;
+  std::vector<std::byte> m_packetdata = std::vector<std::byte>(ICMP_LEN);
+  std::vector<std::byte> m_buffer = std::vector<std::byte>(ICMP_LEN);
   int m_interval;
   int m_timeout;
-  int m_sockfd;
   int m_count;
+  sockets::Socket m_socket;
 
   void print_status(bool success);
 

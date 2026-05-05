@@ -1,0 +1,2 @@
+#pragma once
+#define VAKTIN_VERSION "@VERSION@"

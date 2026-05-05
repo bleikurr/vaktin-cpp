@@ -1,20 +1,28 @@
 #include "vaktin/icmp.hpp"
 
+#include <chrono>
 #include <csignal>
+#include <cstdint>
+#include <cstring>
 #include <iostream>
-#include <netinet/ip_icmp.h>
+
+#include <endian.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+#include "netpp/address.hpp"
+#include "vaktin/termcolor.hpp"
 
 #define ICMP_PAYLOAD_OFFSET 8
 
 namespace vaktin {
 namespace icmp {
-
 using namespace netpp;
+
+namespace {
 // Useless rn
-uint16_t icmp_checksum(std::span<const uint8_t> data) {
+[[maybe_unused]] uint16_t icmp_checksum(std::span<const uint8_t> data) {
   int i = 0;
   size_t len = data.size();
   uint32_t sum = 0;
@@ -34,12 +42,32 @@ uint16_t icmp_checksum(std::span<const uint8_t> data) {
   return static_cast<uint16_t>(~sum);
 }
 
+uint64_t timestamp_now() {
+  auto ts = std::chrono::steady_clock::now().time_since_epoch().count();
+  return static_cast<std::uint64_t>(ts);
+}
+
+double
+calculate_rtt_millis(const std::chrono::steady_clock::time_point &ts_return,
+                     uint64_t sent) {
+  auto rtt = std::chrono::duration<double, std::milli>(
+      ts_return - std::chrono::steady_clock::time_point(
+                      std::chrono::steady_clock::duration(sent)));
+
+  return rtt.count();
+}
+
+} // namespace
+
 volatile sig_atomic_t Ping::stop = 0;
+bool Ping::colored = true;
 
 void Ping::sigint_handler(int signal) {
   std::cout << "\rStopping" << std::endl << std::flush;
   Ping::stop = 1;
 }
+
+void Ping::disable_color() { Ping::colored = false; }
 
 void Ping::handle_sigint() { signal(SIGINT, Ping::sigint_handler); }
 
@@ -54,12 +82,11 @@ Ping::Ping(char *address, int interval)
     return;
   }
 
-  struct icmp *packet = reinterpret_cast<struct icmp *>(m_packetdata.data());
-  packet->icmp_type = ICMP_ECHO;
-  packet->icmp_code = 0;
-  packet->icmp_seq = 1;
-  packet->icmp_id = 1024;
-  packet->icmp_cksum = 0;
+  m_packet.header.icmp_type = ICMP_ECHO;
+  m_packet.header.icmp_code = 0;
+  m_packet.header.icmp_seq = 1;
+  m_packet.header.icmp_id = 1024;
+  m_packet.header.icmp_cksum = 0;
 
   m_address = addr;
   m_interval = interval;
@@ -69,14 +96,21 @@ Ping::Ping(char *address, int interval)
   m_ready = true;
 }
 
-void Ping::print_status(bool success) {
-  std::cout << m_address->name() << ": (" << m_address->ip() << ") - "
-            << m_count << " ";
+void Ping::print_status(bool success, uint16_t payload_count, double rtt) {
+  if (success && (payload_count != m_count))
+    return;
+
+  if (Ping::colored)
+    std::cout << (success ? termcolor::GREEN : termcolor::RED);
+
+  std::cout << m_address->name() << ":(" << m_address->ip() << ") - " << m_count
+            << ": ";
   if (success) {
-    std::cout << "Ping!" << std::endl;
+    std::cout << std::format("{:.3f}ms", rtt);
   } else {
-    std::cout << "NoAnswer" << std::endl;
+    std::cout << "timeout";
   }
+  std::cout << termcolor::RESET << std::endl;
 }
 
 bool Ping::is_ready() { return m_ready; }
@@ -93,19 +127,29 @@ void Ping::ping() {
   fd.events = POLLIN;
   int ready = 0;
 
+  struct icmp_packet rcvd{};
+
+  address::Address source_addr = address::Address::empty_address();
   m_socket.set_address(m_address.value());
   while (true) {
-    m_socket.sendto(m_packetdata);
     m_count++;
+    m_packet.payload.count = m_count;
+    m_packet.payload.timestamp = timestamp_now();
+    std::memcpy(m_packetdata.data(), &m_packet, sizeof(m_packet));
 
+    m_socket.sendto(m_packetdata);
     ready = poll(fds, nfds, m_timeout);
     if (Ping::stop) {
       break;
     }
     if (ready > 0) {
       if (fd.revents & POLLIN) {
-        m_socket.recvfrom(m_buffer);
-        print_status(true);
+        m_socket.recvfrom(m_buffer, source_addr);
+        auto ts_return = std::chrono::steady_clock().now();
+        memcpy(&rcvd, m_buffer.data(), sizeof(rcvd));
+        double rtt = calculate_rtt_millis(ts_return, rcvd.payload.timestamp);
+
+        print_status(true, rcvd.payload.count, rtt);
         sleep(m_interval);
       } else {
         std::cout << "Something happened in the socket";
@@ -113,7 +157,7 @@ void Ping::ping() {
         break;
       }
     } else if (ready == 0) {
-      print_status(false);
+      print_status(false, 0, 0);
     } else {
       std::cerr << "Error listening on socket" << std::endl;
       break;
